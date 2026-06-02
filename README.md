@@ -24,6 +24,10 @@ From the build folder:
 This will prompt you for your admin password, as `ufwWorker` runs with root permissions. Once the worker
 is up and running it will interface the gui (non-root) with `ufw`.
 
+It should look something like this:
+
+![ufwGui Screenshot](https://i.imgur.com/n7P3qgr.png)
+
 # Features:
 
 What I'm planning to support is:
