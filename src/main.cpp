@@ -1,5 +1,10 @@
+#include "lgi/common/File.h"
 #include "lgi/common/Lgi.h"
+#include "lgi/common/LgiDefs.h"
 #include "lgi/common/LgiInterfaces.h"
+#include "lgi/common/Net.h"
+#include "lgi/common/Notifications.h"
+#include "lgi/common/Stream.h"
 #include "lgi/common/TextLabel.h"
 #include "lgi/common/TextLog.h"
 #include "lgi/common/TabView.h"
@@ -21,12 +26,12 @@
 const char *AppName = "ufwGui";
 
 enum Ctrls {
-    ID_LOG = 100,
-    ID_TABS,
-    ID_COMMS_LOG,
-    ID_COMMS_STATE,
-    ID_TABLE,
-    ID_UFW_ENABLE,
+    ID_LOG = 100,   // LTextLog
+    ID_TABS,        // LTabView
+    ID_TABLE,       // LTableLayout
+    ID_COMMS_LOG,   // LTextLog
+    ID_COMMS_STATE, // LTextLog
+    ID_UFW_ENABLE,  // LCheckBox
 };
 
 class UfwGuiApp : public LWindow
@@ -39,6 +44,8 @@ class UfwGuiApp : public LWindow
     LTabView *tabs = nullptr;
     LAutoPtr<LSubProcess> worker;
     LAutoPtr<LCommsBus> bus;
+    LFile commsStateLog;
+    LAutoPtr<LStreamTee> tee;
 
     enum TState
     {
@@ -49,7 +56,7 @@ class UfwGuiApp : public LWindow
 
     enum TStatus {
         ESuccess = 0,
-        EError = -1,
+        EError   = -1,
         ETimeout = -2,
     };
 
@@ -62,21 +69,24 @@ class UfwGuiApp : public LWindow
         LString args;
         TCallback cb;
     };
-    LArray<Cmd> cmds;
+    LArray<Cmd*> cmds;
     int nextRef = 10;
 
     void Run(LString args, TCallback cb)
     {
-        auto &cmd = cmds.New();
-        cmd.args = args;
-        cmd.cb = std::move(cb);
-        cmd.ref = nextRef++;
-        cmd.startTs = LCurrentTime();
+        if (auto cmd = new Cmd)
+        {
+            cmd->args = args;
+            cmd->cb = std::move(cb);
+            cmd->ref = nextRef++;
+            cmd->startTs = LCurrentTime();
+            cmds.Add(cmd);
 
-        LJson j;
-        j.Set("ref", (int64_t)cmd.ref);
-        j.Set("args", args);
-        bus->SendMsg(EP_UFW_RUN, j.GetJson());
+            LJson j;
+            j.Set("ref", (int64_t)cmd->ref);
+            j.Set("args", args);
+            bus->SendMsg(EP_UFW_RUN, j.GetJson());
+        }
     }
 
 public:
@@ -103,14 +113,23 @@ public:
         auto c = tbl->GetCell(0, 0);
         c->Add(new LTextLabel(ID_STATIC, 0, 0, -1, -1, "Enable ufw:"));
         c = tbl->GetCell(1, 0);
-        c->Add(chkEnable = new LCheckBox(ID_UFW_ENABLE, "", false));
+        if (c->Add(chkEnable = new LCheckBox(ID_UFW_ENABLE, "", false)))
+            chkEnable->Enabled(false);
         c = tbl->GetCell(0, 1, true, 2);
         if (txtLog = new LTextLog(ID_LOG))
             c->Add(txtLog);
+        else
+            return;
 
         tab = tabs->Append("Comms");
+        commsStateLog.Open(LFile::Path(LSP_APP_INSTALL) / "commsState.log", O_WRITE);
+        commsStateLog.SetSize(0);
         if (commsLog = new LTextLog(ID_COMMS_LOG))
             tab->AddView(commsLog);
+        else
+            return;
+        tee.Reset(new LStreamTee(commsLog, &commsStateLog));
+        LSetNetworkLog(tee.Get());
 
         tab = tabs->Append("State");
         if (commsState = new LTextLog(ID_COMMS_STATE))
@@ -154,29 +173,109 @@ public:
     {
     }
 
+    int OnNotify(LViewI *c, const LNotification &n) override
+    {
+        switch (c->GetId())
+        {
+            case ID_UFW_ENABLE:
+            {
+                if (n.Type == LNotifyValueChanged)
+                {
+                    c->Enabled(false);
+                    Run(c->Value() ? "enable" : "disable",
+                        [this, c, enable = c->Value()](auto code, auto str, auto &json)
+                        {
+                            c->Enabled(true);
+                            if (code == 0)
+                            {
+                                c->Value(enable);
+
+                                // Update the status:
+                                UfwStatus();
+                            };
+                        });
+                }
+                else
+                    txtLog->Print("%s:%i - unexpected notify: %i\n", _FL, n.Type);
+                break;
+            }
+        }
+
+        return 0;
+    }
+
     void UfwResult(LString json)
     {
         LJson j(json);
 
-        txtLog->Print("Got result: %s\n", json.Get());
+        // txtLog->Print("Got result: %s\n", json.Get());
 
         auto ref = j.Get("ref");
         for (size_t i=0; i<cmds.Length(); i++)
         {
-            if (cmds[i].ref == ref.Int())
+            auto *cmd = cmds[i];
+            if (cmd->ref == ref.Int())
             {
                 auto exit = j.Get("exit");
                 auto stdout = j.Get("stdout");
-                if (cmds[i].cb)
-                    cmds[i].cb(exit.Int(), stdout, j);
+                if (cmd->cb)
+                    cmd->cb(exit.Int(), stdout, j);
 
                 // remove the cmd from the array...
                 cmds.DeleteAt(i);
+                delete cmd;
                 return;
             }
         }
 
         txtLog->Print("%s:%i error: no handler for ref '%s'\n", _FL, ref.Get());
+    }
+
+    void OnActive(bool active)
+    {
+        if (chkEnable)
+            chkEnable->Value(active);
+    }
+
+    void UfwStatus()
+    {
+        // txtLog->Print("running status...\n");
+        Run("status numbered", [this](auto exitCode, auto str, auto &json)
+            {
+                if (exitCode == 0)
+                {
+                    state = TRunning;
+
+                    auto lines = str.SplitDelimit("\n");
+                    for (auto &ln: lines)
+                    {
+                        if (ln.Find("Status:") == 0)
+                        {
+                            // status line:
+                            auto status = ln.SplitDelimit(": ");
+                            auto active = status[-1].Equals("active");
+                            OnActive(active);
+                        }
+                        else if (ln(0) == '[')
+                        {
+                            // rule line:
+                            txtLog->Print("rule: %s\n", ln.Get());
+                        }
+                        else
+                        {
+                            // unhandled line:
+                            txtLog->Print("unhandled: %s\n", ln.Get());
+                        }
+                    }
+
+                    if (chkEnable)
+                        chkEnable->Enabled(true);
+                }
+                else
+                {
+                    txtLog->Print("Status err: %i, %s, %s\n", (int)exitCode, str.Get(), json.Get("args").Get());
+                }
+            });
     }
 
     void OnPulse()
@@ -185,15 +284,16 @@ public:
         auto now = LCurrentTime();
         for (size_t i=0; i<cmds.Length(); i++)
         {
-            auto &cmd = cmds[i];
-            if (now - cmd.startTs >= TIMEOUT_MS)
+            auto cmd = cmds[i];
+            if (now - cmd->startTs >= TIMEOUT_MS)
             {
-                if (cmd.cb)
+                if (cmd->cb)
                 {
                     LJson j;
-                    cmd.cb(ETimeout, LString(), j);
+                    cmd->cb(ETimeout, LString(), j);
                 }
                 cmds.DeleteAt(i--);
+                delete cmd;
                 txtLog->Print("%s:%i - deleted timed out, %i remain\n", _FL, (int)cmds.Length());
             }
         }
@@ -203,16 +303,8 @@ public:
             case TInit:
             {
                 if (!cmds.Length())
-                {
-                    txtLog->Print("running status...\n");
-                    Run("status", [this](auto exitCode, auto str, auto &json)
-                        {
-                            if (exitCode == 0)
-                                state = TRunning;
-                            txtLog->Print("status: %i, %s, %s\n", (int)exitCode, str.Get(), json.Get("args").Get());
-                        });
-                }
-                else txtLog->Print("%s:%i - %i cmds exist...\n", _FL, (int)cmds.Length());
+                    UfwStatus();
+                // else txtLog->Print("%s:%i - %i cmds exist...\n", _FL, (int)cmds.Length());
                 break;
             }
             case TQuit:
