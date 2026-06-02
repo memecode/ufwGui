@@ -92,6 +92,7 @@ int LgiMain(OsAppArguments &AppArgs)
 	LApp a(AppArgs, AppName);
 	if (a.IsOk())
 	{
+        LSubProcess::debugLog = &logger;
         LSetNetworkLog(&logger);
 
         App a;

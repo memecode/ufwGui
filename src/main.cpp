@@ -95,6 +95,7 @@ class UfwGuiApp : public LWindow
     LAutoPtr<LCommsBus> bus;
     LFile commsStateLog;
     LAutoPtr<LStreamTee> tee;
+    LArray<int64_t> reSelect;
 
     enum TState
     {
@@ -237,6 +238,7 @@ public:
 
     ~UfwGuiApp()
     {
+        LSetNetworkLog(nullptr);
     }
 
     int OnNotify(LViewI *c, const LNotification &n) override
@@ -272,9 +274,18 @@ public:
                     break;
 
                 LArray<RuleItem*> del;
-                for (auto r: rules)
+                for (int64_t i=0; i<rules.Length(); i++)
+                {
+                    auto r = rules[i];
                     if (r->IsChecked())
+                    {
+                        if (reSelect.Length() == 0 &&
+                            i < rules.Length()-1)
+                            reSelect.Add(rules[i+1]->index);
+
                         del.Add(r);
+                    }
+                }
 
                 // sort highest to lowest......
                 del.Sort([](auto *a, auto *b)
@@ -285,7 +296,7 @@ public:
                 for (auto r: del)
                 {
                     txtLog->Print("del %i\n", (int)r->index);
-                    Run(LString::Fmt("delete " LPrintfInt64, r->index),
+                    Run(LString::Fmt("--force delete " LPrintfInt64, r->index),
                         [this, idx = r->index](auto code, auto str, auto &json)
                         {
                             if (code)
@@ -303,8 +314,11 @@ public:
                                     delete r;
                                     break;
                                 }
+                            
                         });
                 }
+
+                UfwStatus();
                 break;
             }
         }
@@ -345,28 +359,22 @@ public:
             chkEnable->Value(active);
     }
 
-    bool HasRule(RuleItem *rule)
-    {
-        LArray<RuleItem*> rules;
-        if (!lstRules->GetAll(rules))
-            return false;
-        
-        for (auto r: rules)
-            if (*r == *rule)
-                return true;
-
-        return false;
-    }
-
     void UfwStatus()
     {
-        // txtLog->Print("running status...\n");
+        txtLog->Print("running status...\n");
         Run("status numbered",
             [this](auto exitCode, auto str, auto &json)
             {
                 if (exitCode == 0)
                 {
                     state = TRunning;
+
+                    // txtLog->Print("status txt: %s\n", str.Get());
+
+                    if (!lstRules)
+                        return;
+
+                    lstRules->Empty();
 
                     auto lines = str.SplitDelimit("\n");
                     for (auto &ln: lines)
@@ -382,23 +390,32 @@ public:
                         {
                             // rule line:
                             auto parts = ln.SplitDelimit("[]");
-                            txtLog->Print("rule: %s\n", ln.Get());
+                            // txtLog->Print("rule: %s\n", ln.Get());
 
-                            auto item = new RuleItem(parts);
-                            if (lstRules && !HasRule(item))
+                            if (auto item = new RuleItem(parts))
                                 lstRules->Insert(item);
-                            else
-                                delete item;
                         }
                         else
                         {
                             // unhandled line:
-                            txtLog->Print("unhandled: %s\n", ln.Get());
+                            // txtLog->Print("unhandled: %s\n", ln.Get());
+                        }
+                    }
+
+                    if (reSelect.Length())
+                    {
+                        LArray<RuleItem*> rules;
+                        if (lstRules->GetAll(rules))
+                        {
+                            for (auto r: rules)
+                                if (reSelect.HasItem(r->index))
+                                    r->Select(true);
                         }
                     }
 
                     if (chkEnable)
                         chkEnable->Enabled(true);
+
                     if (lstRules)
                         lstRules->ResizeColumnsToContent();
                 }

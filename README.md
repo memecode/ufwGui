@@ -19,7 +19,7 @@ That should get you the binaries `ufwGui` and `ufwWorker`.
 
 From the build folder:
 
-    ufwGui
+    ./ufwGui
 
 This will prompt you for your admin password, as `ufwWorker` runs with root permissions. Once the worker
 is up and running it will interface the gui (non-root) with `ufw`.
@@ -30,8 +30,11 @@ It should look something like this:
 
 # Features:
 
-What I'm planning to support is:
+What is supported:
 
 - View the existing rules.
 - Deleting rules.
+
+What I'm planning to support is:
+
 - Added basic new rules. Not sure how far I'll go with this...
