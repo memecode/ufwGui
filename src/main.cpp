@@ -15,6 +15,9 @@
 #include "lgi/common/Box.h"
 #include "lgi/common/TextLabel.h"
 #include "lgi/common/CheckBox.h"
+#include "lgi/common/List.h"
+#include "lgi/common/ListItemCheckBox.h"
+#include "lgi/common/Button.h"
 
 #include "ufwGui/ufwGui.h"
 #include <functional>
@@ -32,6 +35,51 @@ enum Ctrls {
     ID_COMMS_LOG,   // LTextLog
     ID_COMMS_STATE, // LTextLog
     ID_UFW_ENABLE,  // LCheckBox
+    ID_RULES,       // LList
+    ID_ADD,         // LButton
+    ID_DELETE,      // LButton
+};
+
+enum TCol {
+    ColSel,
+    ColNumber,
+    ColText,
+};
+
+class RuleItem : public LListItem
+{
+    LListItemCheckBox *chk = nullptr;
+
+public:
+    int64_t index = -1;
+
+    RuleItem(LString::Array &parts)
+    {
+        chk = new LListItemCheckBox(this, ColSel);
+
+        if (parts.Length() == 2)
+        {
+            auto s = parts[0].Strip(); 
+            index = s.Int();
+            SetText(s, ColNumber);
+            SetText(parts[1].Strip(), ColText);
+        }
+        else
+        {
+            for (int i=0; i<parts.Length(); i++)
+                printf("part[%i]='%s'\n", i, parts[i].Get());
+        }
+    }
+
+    bool operator ==(const RuleItem &r) const
+    {
+        return index == r.index;
+    }
+
+    bool IsChecked() const
+    {
+        return chk ? chk->Value() : false;
+    }
 };
 
 class UfwGuiApp : public LWindow
@@ -41,6 +89,7 @@ class UfwGuiApp : public LWindow
     LTextLog *txtLog = nullptr;
     LTextLog *commsLog = nullptr;
     LTextLog *commsState = nullptr;
+    LList *lstRules = nullptr;
     LTabView *tabs = nullptr;
     LAutoPtr<LSubProcess> worker;
     LAutoPtr<LCommsBus> bus;
@@ -110,12 +159,28 @@ public:
             tab->Append(tbl);
         else
             return;
-        auto c = tbl->GetCell(0, 0);
+        int row = 0;
+        int cols = 3;
+        auto c = tbl->GetCell(0, row);
         c->Add(new LTextLabel(ID_STATIC, 0, 0, -1, -1, "Enable ufw:"));
-        c = tbl->GetCell(1, 0);
+        c = tbl->GetCell(1, row);
         if (c->Add(chkEnable = new LCheckBox(ID_UFW_ENABLE, "", false)))
             chkEnable->Enabled(false);
-        c = tbl->GetCell(0, 1, true, 2);
+
+        // List of rules row:
+        c = tbl->GetCell(0, ++row, true, 2);
+        if (c->Add(lstRules = new LList(ID_RULES)))
+        {
+            lstRules->AddColumn("Sel");
+            lstRules->AddColumn("Number");
+            lstRules->AddColumn("Text");
+        }
+        c = tbl->GetCell(2, row);
+        c->Add(new LButton(ID_ADD, 0, 0, -1, -1, "Add"));
+        c->Add(new LButton(ID_DELETE, 0, 0, -1, -1, "Del"));
+
+        // Log row:
+        c = tbl->GetCell(0, ++row, true, cols);
         if (txtLog = new LTextLog(ID_LOG))
             c->Add(txtLog);
         else
@@ -128,6 +193,7 @@ public:
             tab->AddView(commsLog);
         else
             return;
+            
         tee.Reset(new LStreamTee(commsLog, &commsStateLog));
         LSetNetworkLog(tee.Get());
 
@@ -199,6 +265,48 @@ public:
                     txtLog->Print("%s:%i - unexpected notify: %i\n", _FL, n.Type);
                 break;
             }
+            case ID_DELETE:
+            {
+                LArray<RuleItem*> rules;
+                if (!lstRules->GetAll(rules))
+                    break;
+
+                LArray<RuleItem*> del;
+                for (auto r: rules)
+                    if (r->IsChecked())
+                        del.Add(r);
+
+                // sort highest to lowest......
+                del.Sort([](auto *a, auto *b)
+                    {
+                        return (int) ((*b)->index - (*a)->index);
+                    });
+
+                for (auto r: del)
+                {
+                    txtLog->Print("del %i\n", (int)r->index);
+                    Run(LString::Fmt("delete " LPrintfInt64, r->index),
+                        [this, idx = r->index](auto code, auto str, auto &json)
+                        {
+                            if (code)
+                            {
+                                txtLog->Print("delete err: %i, %s\n", (int)code, str.Get());
+                                return;
+                            }
+                            
+                            LArray<RuleItem*> rules;
+                            if (!lstRules->GetAll(rules))
+                                return;
+                            for (auto r: rules)
+                                if (r->index == idx)
+                                {
+                                    delete r;
+                                    break;
+                                }
+                        });
+                }
+                break;
+            }
         }
 
         return 0;
@@ -237,10 +345,24 @@ public:
             chkEnable->Value(active);
     }
 
+    bool HasRule(RuleItem *rule)
+    {
+        LArray<RuleItem*> rules;
+        if (!lstRules->GetAll(rules))
+            return false;
+        
+        for (auto r: rules)
+            if (*r == *rule)
+                return true;
+
+        return false;
+    }
+
     void UfwStatus()
     {
         // txtLog->Print("running status...\n");
-        Run("status numbered", [this](auto exitCode, auto str, auto &json)
+        Run("status numbered",
+            [this](auto exitCode, auto str, auto &json)
             {
                 if (exitCode == 0)
                 {
@@ -259,7 +381,14 @@ public:
                         else if (ln(0) == '[')
                         {
                             // rule line:
+                            auto parts = ln.SplitDelimit("[]");
                             txtLog->Print("rule: %s\n", ln.Get());
+
+                            auto item = new RuleItem(parts);
+                            if (lstRules && !HasRule(item))
+                                lstRules->Insert(item);
+                            else
+                                delete item;
                         }
                         else
                         {
@@ -270,6 +399,8 @@ public:
 
                     if (chkEnable)
                         chkEnable->Enabled(true);
+                    if (lstRules)
+                        lstRules->ResizeColumnsToContent();
                 }
                 else
                 {
