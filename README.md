@@ -6,7 +6,7 @@ In very early stages of roughing out the design.
 
 Something like this:
 
-    git clone https://github.com/memecode/lgi.git
+    git clone https://github.com/memecode/lgi.git lgi/trunk
     git clone https://github.com/memecode/ufwGui.git
     cd ufwGui
     mkdir build

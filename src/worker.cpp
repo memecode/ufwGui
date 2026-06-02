@@ -36,11 +36,11 @@ class App : public LCancel
 public:
     App() : bus(&logger)
     {
-        bus.Listen(EP_SCAN_RULES,
+        bus.Listen(EP_UFW_RUN,
             [this](auto str)
             {
-                logger.Print("%s:%i - got scan req..\n", _FL);
-                ScanRules(str);
+                logger.Print("%s:%i - got run req..\n", _FL);
+                RunUfw(str);
             });
 
         bus.Listen(EP_QUIT,
@@ -51,12 +51,18 @@ public:
             });
     }
 
-    void ScanRules(LString args)
+    void RunUfw(LString json)
     {
-        LSubProcess ufw("ufw", "status");
-        LJson out;
+        LJson in(json);
+        auto args = in.Get("args");
+        auto ref = in.Get("ref");
 
-        logger.Print("%s:%i - starting ufw..\n", _FL);
+        LSubProcess ufw("ufw", args);
+        LJson out;
+        out.Set("ref", ref);
+        out.Set("args", args);
+
+        logger.Print("%s:%i - starting 'ufw %s'\n", _FL, args.Get());
         if (ufw.Start())
         {
             LStringPipe p;
@@ -68,7 +74,7 @@ public:
         else out.Set("exit", (int64_t)-1);
 
         logger.Print("%s:%i - sending output..\n", _FL);
-        bus.SendMsg(EP_SCAN_RESULT, out.GetJson());
+        bus.SendMsg(EP_UFW_RESULT, out.GetJson());
     }
 
     void Run()

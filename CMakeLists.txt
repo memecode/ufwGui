@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(ufwGui)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(LGI_LIB_ONLY TRUE)
 add_subdirectory(../lgi/trunk lgi)
 
