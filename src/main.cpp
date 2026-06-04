@@ -18,6 +18,7 @@
 #include "lgi/common/List.h"
 #include "lgi/common/ListItemCheckBox.h"
 #include "lgi/common/Button.h"
+#include "lgi/common/Edit.h"
 
 #include "ufwGui/ufwGui.h"
 #include <functional>
@@ -38,6 +39,8 @@ enum Ctrls {
     ID_RULES,       // LList
     ID_ADD,         // LButton
     ID_DELETE,      // LButton
+    ID_FILTER,      // LEdit
+    ID_CLEAR_FILTER, // LButton
 };
 
 enum TCol {
@@ -96,6 +99,7 @@ class UfwGuiApp : public LWindow
     LFile commsStateLog;
     LAutoPtr<LStreamTee> tee;
     LArray<int64_t> reSelect;
+    LString filterStr;
 
     enum TState
     {
@@ -162,30 +166,41 @@ public:
             return;
         int row = 0;
         int cols = 3;
-        auto c = tbl->GetCell(0, row);
-        c->Add(new LTextLabel(ID_STATIC, 0, 0, -1, -1, "Enable ufw:"));
-        c = tbl->GetCell(1, row);
-        if (c->Add(chkEnable = new LCheckBox(ID_UFW_ENABLE, "", false)))
-            chkEnable->Enabled(false);
+
+        // Enable UFW row:
+            auto c = tbl->GetCell(0, row);
+            c->Add(new LTextLabel(ID_STATIC, 0, 0, -1, -1, "Enable ufw:"));
+            c = tbl->GetCell(1, row);
+            if (c->Add(chkEnable = new LCheckBox(ID_UFW_ENABLE, "", false)))
+                chkEnable->Enabled(false);
+
+        // Filter row:
+            c = tbl->GetCell(0, ++row);
+            c->VerticalAlign(LCss::VerticalMiddle);
+            c->Add(new LTextLabel(ID_STATIC, 0, 0, -1, -1, "Filter:"));
+            c = tbl->GetCell(1, row);
+            c->Add(new LEdit(ID_FILTER));
+            c = tbl->GetCell(2, row);
+            c->Add(new LButton(ID_CLEAR_FILTER, 0, 0, -1, -1, "x"));
 
         // List of rules row:
-        c = tbl->GetCell(0, ++row, true, 2);
-        if (c->Add(lstRules = new LList(ID_RULES)))
-        {
-            lstRules->AddColumn("Sel");
-            lstRules->AddColumn("Number");
-            lstRules->AddColumn("Text");
-        }
-        c = tbl->GetCell(2, row);
-        c->Add(new LButton(ID_ADD, 0, 0, -1, -1, "Add"));
-        c->Add(new LButton(ID_DELETE, 0, 0, -1, -1, "Del"));
+            c = tbl->GetCell(0, ++row, true, 2);
+            if (c->Add(lstRules = new LList(ID_RULES)))
+            {
+                lstRules->AddColumn("Sel");
+                lstRules->AddColumn("Number");
+                lstRules->AddColumn("Text");
+            }
+            c = tbl->GetCell(2, row);
+            c->Add(new LButton(ID_ADD, 0, 0, -1, -1, "Add"));
+            c->Add(new LButton(ID_DELETE, 0, 0, -1, -1, "Del"));
 
         // Log row:
-        c = tbl->GetCell(0, ++row, true, cols);
-        if (txtLog = new LTextLog(ID_LOG))
-            c->Add(txtLog);
-        else
-            return;
+            c = tbl->GetCell(0, ++row, true, cols);
+            if (txtLog = new LTextLog(ID_LOG))
+                c->Add(txtLog);
+            else
+                return;
 
         tab = tabs->Append("Comms");
         commsStateLog.Open(LFile::Path(LSP_APP_INSTALL) / "commsState.log", O_WRITE);
@@ -241,10 +256,43 @@ public:
         LSetNetworkLog(nullptr);
     }
 
+    void FilterRules()
+    {
+        LArray<RuleItem*> rules;
+        if (!lstRules || !lstRules->GetAll(rules))
+            return;
+        
+        for (auto r: rules)
+        {
+            auto txt = r->GetText(ColText);
+            bool dsp = !filterStr || Stristr(txt, filterStr.Get());
+            r->GetCss(true)->Display(dsp ? LCss::DispBlock : LCss::DispNone);
+        }
+
+        lstRules->UpdateAllItems();
+    }
+
     int OnNotify(LViewI *c, const LNotification &n) override
     {
         switch (c->GetId())
         {
+            case ID_FILTER:
+            {
+                if (n.Type != LNotifyEscapeKey)
+                {
+                    filterStr = c->Name();
+                    FilterRules();
+                    break;
+                }
+                // else it's the ESC key, so fall through to clear filter case
+            }
+            case ID_CLEAR_FILTER:
+            {
+                filterStr.Empty();
+                SetCtrlName(ID_FILTER, nullptr);
+                FilterRules();
+                break;
+            }
             case ID_UFW_ENABLE:
             {
                 if (n.Type == LNotifyValueChanged)
